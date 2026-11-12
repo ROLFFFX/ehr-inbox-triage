@@ -1,0 +1,18 @@
+# Environment and caches
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.DS_Store
+*.log
+
+# Local only: data, report, course documents, cited papers, notes, interim deck
+private/
+# Data downloaded by a fresh clone (scripts.download_data)
+data/raw/
+
+# Per-message scores contain corpus text (CC BY-NC); regenerate with the scripts
+results/**/scores/
+results/smoke/
+# Tables written by make_tables in a fresh clone (the report is not public)
+report/

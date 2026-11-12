@@ -1,0 +1,7 @@
+source,split,n,n_urgent,prevalence,median_chars
+pmr_reddit,train,772,78,0.101,773
+pmr_reddit,dev,87,9,0.103,778
+pmr_reddit,test,362,38,0.105,768
+pmr_synth,INBOX_A,30,5,0.167,389
+pmr_synth,INBOX_B,30,5,0.167,404
+cssrs_suicidewatch,all,1170,245,0.209,283

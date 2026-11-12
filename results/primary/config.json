@@ -1,0 +1,7 @@
+{
+  "methods": null,
+  "max_level": 1.5,
+  "seed": 0,
+  "n_boot": 2000,
+  "tag": "primary"
+}
