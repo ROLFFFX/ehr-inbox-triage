@@ -60,6 +60,20 @@ class Result:
     inboxes: pd.DataFrame | None = None
 
 
+# Scores at or above this are "force to the top" markers (the keyword bypass
+# returns 1e6); they are kept as they are and left out of the fold statistics.
+SENTINEL = 1e5
+
+
+def _fold_stats(raw: np.ndarray) -> tuple[float, float]:
+    ok = raw[raw < SENTINEL]
+    return float(np.mean(ok)), max(float(np.std(ok)), 1e-8)
+
+
+def _standardise(raw: np.ndarray, mu: float, sd: float) -> np.ndarray:
+    return np.where(raw >= SENTINEL, raw, (raw - mu) / sd)
+
+
 class FoldEnsemble:
     """Scores new text with the mean of the CV fold models.
 
@@ -82,7 +96,7 @@ class FoldEnsemble:
     def score(self, texts) -> np.ndarray:
         if self.stats is None:
             return self.raw_score(texts)
-        return np.mean([(m.score(texts) - mu) / sd for m, (mu, sd) in zip(self.models, self.stats)], axis=0)
+        return np.mean([_standardise(m.score(texts), mu, sd) for m, (mu, sd) in zip(self.models, self.stats)], axis=0)
 
 
 def out_of_fold(method, pool: pd.DataFrame, n_splits: int = 5, seed: int = 0,
@@ -93,8 +107,8 @@ def out_of_fold(method, pool: pd.DataFrame, n_splits: int = 5, seed: int = 0,
     for tr, va in skf.split(pool, pool["urgent"]):
         m = copy.deepcopy(method).fit(pool["text"].iloc[tr], pool["level"].iloc[tr], pool["urgent"].iloc[tr])
         raw = m.score(pool["text"].iloc[va])
-        mu, sd = float(np.mean(raw)), max(float(np.std(raw)), 1e-8)
-        oof[va] = (raw - mu) / sd if standardize else raw
+        mu, sd = _fold_stats(raw)
+        oof[va] = _standardise(raw, mu, sd) if standardize else raw
         models.append(m)
         stats.append((mu, sd))
     return oof, FoldEnsemble(models, stats if standardize else None)
