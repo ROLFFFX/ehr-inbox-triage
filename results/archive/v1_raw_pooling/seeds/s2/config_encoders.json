@@ -1,0 +1,19 @@
+{
+  "models": [
+    "bioclinicalbert",
+    "roberta"
+  ],
+  "heads": [
+    "binary",
+    "ordinal"
+  ],
+  "model_seed": 2,
+  "epochs": 5,
+  "max_len": 512,
+  "batch_size": 16,
+  "lr": 2e-05,
+  "max_level": 1.5,
+  "n_boot": 2000,
+  "tag": "seeds/s2",
+  "config_name": "encoders"
+}

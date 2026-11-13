@@ -6,7 +6,10 @@ and both tracks unchanged.
 
 Hyperparameters are fixed in advance (no search on any evaluation data):
 the epoch is chosen on a stratified 10% split held out inside each training
-fold. Two heads share one regression output:
+fold. A fine-tune whose predictions on that split collapse to a near
+constant (SD < ``COLLAPSE_SD``, a known failure of BERT fine-tuning on small
+data) is restarted with a new seed, up to ``max_restarts`` times. Two heads
+share one regression output:
 
 - ``binary``:  BCE on Level-1 vs rest, positives up-weighted by the class
   ratio; score = logit (nominal decision rule: logit > 0, i.e. P > 0.5).
@@ -29,6 +32,7 @@ ENCODERS = {
     "roberta": "roberta-base",
     "tiny": "google/bert_uncased_L-2_H-128_A-2",
 }
+COLLAPSE_SD = 0.1  # SD of inner-validation outputs (logits or standardised levels); healthy runs give > 0.3
 LEVEL_MEAN, LEVEL_SD = 3.5, 1.7  # rough PMR-level scale, keeps the regression target near unit variance
 
 
@@ -66,11 +70,14 @@ class EncoderMethod:
         warmup: float = 0.1,
         weight_decay: float = 0.01,
         val_frac: float = 0.1,
+        max_restarts: int = 2,
     ):
         assert head in ("binary", "ordinal")
         self.model_key, self.model_id, self.head = model_key, ENCODERS[model_key], head
         self.seed, self.lr, self.epochs, self.batch_size = seed, lr, epochs, batch_size
         self.max_len, self.warmup, self.weight_decay, self.val_frac = max_len, warmup, weight_decay, val_frac
+        self.max_restarts = max_restarts
+        self.restarts = 0
         self.name = f"{model_key}_{head}"
         self.nominal_threshold = 0.0 if head == "binary" else -1.5
         self.model = self.tokenizer = None
@@ -81,6 +88,7 @@ class EncoderMethod:
         fresh = copy.copy(self)
         fresh.model = None
         fresh.best_epoch = None
+        fresh.restarts = 0
         return fresh
 
     # ------------------------------------------------------------------
@@ -112,18 +120,32 @@ class EncoderMethod:
         return out
 
     def fit(self, texts, level, urgent):
+        texts, level, urgent = list(texts), np.asarray(level, float), np.asarray(urgent, bool)
+        # The inner split is fixed by the model seed; restarts change only the
+        # initialisation and data order.
+        split = StratifiedShuffleSplit(1, test_size=self.val_frac, random_state=self.seed)
+        tr, va = next(split.split(np.zeros(len(texts)), urgent))
+        for attempt in range(self.max_restarts + 1):
+            sd = self._fit_once(texts, level, urgent, tr, va, self.seed + 1000 * attempt)
+            self.restarts = attempt
+            if sd >= COLLAPSE_SD:
+                break
+            if attempt < self.max_restarts:
+                print(f"[{self.name}] outputs collapsed (val SD {sd:.3f}); restarting with a new seed", flush=True)
+            else:
+                print(f"[{self.name}] outputs still collapsed after {attempt} restarts (val SD {sd:.3f}); keeping it", flush=True)
+        return self
+
+    def _fit_once(self, texts, level, urgent, tr, va, seed) -> float:
         import torch
         from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
-        _seed_everything(self.seed)
-        texts, level, urgent = list(texts), np.asarray(level, float), np.asarray(urgent, bool)
+        _seed_everything(seed)
         self.tokenizer = AutoTokenizer.from_pretrained(self.model_id)
         self.model = AutoModelForSequenceClassification.from_pretrained(self.model_id, num_labels=1)
         dev = _device()
         self.model.to(dev)
 
-        split = StratifiedShuffleSplit(1, test_size=self.val_frac, random_state=self.seed)
-        tr, va = next(split.split(np.zeros(len(texts)), urgent))
         if self.head == "binary":
             target = urgent.astype(np.float32)
             pos_weight = torch.tensor(float((~urgent[tr]).sum() / max(urgent[tr].sum(), 1)), dtype=torch.float32, device=dev)
@@ -139,9 +161,9 @@ class EncoderMethod:
             opt, lambda s: min((s + 1) / warm, max(0.0, (steps - s) / max(1, steps - warm)))
         )
         scaler = torch.amp.GradScaler("cuda", enabled=dev == "cuda")
-        rng = np.random.default_rng(self.seed)
+        rng = np.random.default_rng(seed)
 
-        best, best_state = -np.inf, None
+        best, best_state, best_sd = -np.inf, None, 0.0
         for epoch in range(1, self.epochs + 1):
             self.model.to(dev).train()
             for b, enc in self._batches(texts, tr, shuffle=True, rng=rng):
@@ -163,11 +185,11 @@ class EncoderMethod:
             else:
                 metric = -float(np.mean((pv - target[va]) ** 2))
             if metric > best:
-                best, self.best_epoch = metric, epoch
+                best, self.best_epoch, best_sd = metric, epoch, float(np.std(pv))
                 best_state = {k: v.detach().cpu().clone() for k, v in self.model.state_dict().items()}
         self.model.load_state_dict(best_state)
         self.model.to("cpu").eval()
-        return self
+        return best_sd
 
     def score(self, texts) -> np.ndarray:
         s = self._predict(texts)

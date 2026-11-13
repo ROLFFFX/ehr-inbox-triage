@@ -27,7 +27,7 @@ def _merge(path, rows: list[dict], append: bool):
 
 
 def run_methods(methods: dict, corpora: harness.Corpora, out, seed: int = 0, n_boot: int = 2000,
-                append: bool = False, config: dict | None = None):
+                append: bool = False, config: dict | None = None, standardize: bool = True):
     (out / "scores").mkdir(parents=True, exist_ok=True)
     desc = pd.concat([data.describe(d) for d in (corpora.pool, corpora.test, corpora.synth, corpora.cssrs)])
     desc.to_csv(out / "corpora.csv")
@@ -36,7 +36,7 @@ def run_methods(methods: dict, corpora: harness.Corpora, out, seed: int = 0, n_b
     cls, rnk, trn = [], [], []
     for name, method in methods.items():
         t0 = time.time()
-        r = harness.evaluate(method, corpora, seed=seed, n_boot=n_boot)
+        r = harness.evaluate(method, corpora, seed=seed, n_boot=n_boot, standardize=standardize)
         cls.append({"method": name, **r.classification})
         rnk.append({"method": name, **r.ranking})
         trn.append({"method": name, **r.transfer})
@@ -75,13 +75,15 @@ def main():
     ap.add_argument("--n-boot", type=int, default=2000)
     ap.add_argument("--tag", default="primary")
     ap.add_argument("--append", action="store_true", help="keep rows for other methods already in results/<tag>")
+    ap.add_argument("--no-standardize", dest="standardize", action="store_false",
+                    help="pool raw fold scores (the v1 protocol) instead of standardising each fold model")
     args = ap.parse_args()
 
     corpora = harness.Corpora.load(args.max_level)
     methods = registry(args.seed)
     names = args.methods or list(methods)
     run_methods({n: methods[n] for n in names}, corpora, ROOT / "results" / args.tag, seed=args.seed,
-                n_boot=args.n_boot, append=args.append, config=vars(args))
+                n_boot=args.n_boot, append=args.append, config=vars(args), standardize=args.standardize)
 
 
 if __name__ == "__main__":

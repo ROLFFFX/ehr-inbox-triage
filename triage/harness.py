@@ -2,8 +2,11 @@
 
 1. Calibration. Methods are fit and calibrated only on the PMR-Reddit
    train + dev pool. Trainable methods get out-of-fold scores from
-   stratified 5-fold CV; rule methods score the pool directly. The
-   threshold reaching 95% recall on those calibration scores is locked.
+   stratified 5-fold CV; rule methods score the pool directly. Each fold
+   model's scores are standardised by the mean and SD of its own
+   out-of-fold scores, and the test set is scored by the mean of the
+   standardised fold models. The threshold reaching 95% recall on the
+   calibration scores is locked.
 2. Classification track. The locked threshold is applied to the 362
    held-out test messages: achieved recall and false alarms per 100
    non-urgent, with stratified bootstrap CIs. Threshold-free frontier
@@ -64,24 +67,37 @@ class FoldEnsemble:
     a possibly different C), so a threshold calibrated on out-of-fold scores
     would not transfer. Averaging the very models that produced the
     calibration scores keeps the two on the same scale.
+
+    With ``stats``, each fold model's scores are first standardised by the
+    mean and SD of that model's own out-of-fold scores (label-free), so fold
+    models that learned different scales are pooled and averaged on one scale.
     """
 
-    def __init__(self, models):
-        self.models = models
+    def __init__(self, models, stats=None):
+        self.models, self.stats = models, stats
 
-    def score(self, texts) -> np.ndarray:
+    def raw_score(self, texts) -> np.ndarray:
         return np.mean([m.score(texts) for m in self.models], axis=0)
 
+    def score(self, texts) -> np.ndarray:
+        if self.stats is None:
+            return self.raw_score(texts)
+        return np.mean([(m.score(texts) - mu) / sd for m, (mu, sd) in zip(self.models, self.stats)], axis=0)
 
-def out_of_fold(method, pool: pd.DataFrame, n_splits: int = 5, seed: int = 0) -> tuple[np.ndarray, FoldEnsemble]:
+
+def out_of_fold(method, pool: pd.DataFrame, n_splits: int = 5, seed: int = 0,
+                standardize: bool = True) -> tuple[np.ndarray, FoldEnsemble]:
     oof = np.zeros(len(pool))
-    models = []
+    models, stats = [], []
     skf = StratifiedKFold(n_splits, shuffle=True, random_state=seed)
     for tr, va in skf.split(pool, pool["urgent"]):
         m = copy.deepcopy(method).fit(pool["text"].iloc[tr], pool["level"].iloc[tr], pool["urgent"].iloc[tr])
-        oof[va] = m.score(pool["text"].iloc[va])
+        raw = m.score(pool["text"].iloc[va])
+        mu, sd = float(np.mean(raw)), max(float(np.std(raw)), 1e-8)
+        oof[va] = (raw - mu) / sd if standardize else raw
         models.append(m)
-    return oof, FoldEnsemble(models)
+        stats.append((mu, sd))
+    return oof, FoldEnsemble(models, stats if standardize else None)
 
 
 def _ci_block(scores, y, n_boot, seed, threshold=None) -> dict:
@@ -92,12 +108,13 @@ def _ci_block(scores, y, n_boot, seed, threshold=None) -> dict:
     return metrics.summarize_ci(fn(scores, y), metrics.bootstrap(fn, scores, y, n_boot, seed))
 
 
-def evaluate(method, c: Corpora, seed: int = 0, n_boot: int = 2000, n_inboxes: int = 500) -> Result:
+def evaluate(method, c: Corpora, seed: int = 0, n_boot: int = 2000, n_inboxes: int = 500,
+             standardize: bool = True) -> Result:
     pool, test = c.pool, c.test
 
     # 1. calibration
     if method.needs_fit:
-        cal, final = out_of_fold(method, pool, seed=seed)
+        cal, final = out_of_fold(method, pool, seed=seed, standardize=standardize)
     else:
         cal, final = method.score(pool["text"]), method
     thr = metrics.select_threshold(cal, pool["urgent"])
@@ -131,7 +148,9 @@ def evaluate(method, c: Corpora, seed: int = 0, n_boot: int = 2000, n_inboxes: i
     # everything".
     nominal = getattr(method, "nominal_threshold", None)
     if nominal is not None:
-        nop = metrics.operating_point(s_test, y, nominal)
+        # The nominal rule lives on the method's own (unstandardised) scale.
+        s_raw = final.raw_score(test["text"]) if isinstance(final, FoldEnsemble) else s_test
+        nop = metrics.operating_point(s_raw, y, nominal)
         res.classification |= {"nominal_recall": nop["recall"], "nominal_fa_per_100": nop["fa_per_100"]}
 
     # Second operating point (BMIN 5070): a threshold locked on calibration so

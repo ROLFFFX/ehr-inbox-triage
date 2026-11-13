@@ -3,5 +3,7 @@
   "max_level": 1.5,
   "seed": 0,
   "n_boot": 2000,
-  "tag": "primary"
+  "tag": "primary",
+  "append": true,
+  "standardize": true
 }

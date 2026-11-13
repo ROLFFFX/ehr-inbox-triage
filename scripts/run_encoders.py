@@ -36,17 +36,21 @@ def main():
     ap.add_argument("--max-level", type=float, default=data.URGENT_MAX_LEVEL)
     ap.add_argument("--n-boot", type=int, default=2000)
     ap.add_argument("--tag", default="primary")
+    ap.add_argument("--max-restarts", type=int, default=2, help="re-seed a fine-tune whose outputs collapse")
+    ap.add_argument("--no-standardize", dest="standardize", action="store_false",
+                    help="pool raw fold scores (the v1 protocol) instead of standardising each fold model")
     args = ap.parse_args()
 
     methods = {}
     for m in args.models:
         for h in args.heads:
             e = EncoderMethod(m, h, seed=args.model_seed, lr=args.lr, epochs=args.epochs,
-                              batch_size=args.batch_size, max_len=args.max_len)
+                              batch_size=args.batch_size, max_len=args.max_len,
+                              max_restarts=args.max_restarts)
             methods[e.name] = e
     corpora = harness.Corpora.load(args.max_level)
     run_methods(methods, corpora, ROOT / "results" / args.tag, seed=0, n_boot=args.n_boot, append=True,
-                config={**vars(args), "config_name": "encoders"})
+                config={**vars(args), "config_name": "encoders"}, standardize=args.standardize)
 
 
 if __name__ == "__main__":
